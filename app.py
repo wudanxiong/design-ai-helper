@@ -2,38 +2,40 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from openai import OpenAI
-from paddleocr import PaddleOCR
+# 使用轻量级 OCR 引擎，适配云端环境
+from rapidocr_onnxruntime import RapidOCR
 import pdfplumber
 from docx import Document
-from docx.shared import Pt
+from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-import cv2
 import io
 import json
 import re
 from datetime import datetime
 
-# ================= 配置与初始化 =================
+# ================= 配置区 =================
 
 # 🔴🔴🔴 请在此处填入您的 DeepSeek API Key 🔴🔴🔴
+# 建议使用 st.secrets 更安全，或者直接替换下方的字符串
 API_KEY = "sk-90ed7f3913324b6391f15805f0f963ea" 
+
 # DeepSeek 官方 API 地址
 BASE_URL = "https://api.deepseek.com"
 
 # 设置页面
 st.set_page_config(page_title="装修规划云助手", layout="wide")
 
-# 初始化 PaddleOCR (云端模式：使用 CPU)
+# ================= 初始化 OCR =================
 @st.cache_resource
 def load_ocr():
-    # use_gpu=False 是云端运行的关键，否则会报错
-    return PaddleOCR(use_angle_cls=True, lang="ch", use_gpu=False, show_log=False)
+    # RapidOCR 初始化非常快，不需要下载大模型
+    engine = RapidOCR()
+    return engine
 
-# 尝试加载 OCR，防止部署初期报错卡死
 try:
     ocr = load_ocr()
 except Exception as e:
-    st.warning("OCR 引擎正在初始化中，第一次运行可能较慢...")
+    st.error(f"OCR 引擎初始化失败: {e}")
     ocr = None
 
 # ================= 预设长文本内容 (完整版) =================
@@ -131,10 +133,9 @@ TEXT_BLOCKS = {
 # ================= 核心功能函数 =================
 
 def extract_text_from_file(uploaded_file):
-    """根据文件类型提取文本内容"""
+    """根据文件类型提取文本内容 (适配 RapidOCR)"""
     if ocr is None:
-        st.error("OCR 引擎初始化失败，请检查环境配置。")
-        return ""
+        return "OCR 引擎未就绪"
 
     text_content = ""
     file_type = uploaded_file.name.split('.')[-1].lower()
@@ -143,27 +144,29 @@ def extract_text_from_file(uploaded_file):
         if file_type in ['jpg', 'jpeg', 'png']:
             # 图片 OCR
             bytes_data = uploaded_file.getvalue()
-            result = ocr.ocr(bytes_data, cls=True)
-            if result and result[0]:
-                for line in result[0]:
-                    text_content += line[1][0] + "\n"
+            # RapidOCR 直接处理二进制流
+            result, _ = ocr(bytes_data)
+            if result:
+                # result 格式: [[box, text, score], ...]
+                for line in result:
+                    text_content += line[1] + "\n"
                     
         elif file_type == 'pdf':
             # PDF 处理
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
                     page_text = page.extract_text()
-                    if page_text and len(page_text) > 20:
+                    if page_text and len(page_text) > 30:
                         text_content += page_text + "\n"
                     else:
                         # 扫描版 PDF 转图片 OCR
-                        im = page.to_image(resolution=200) # 降低分辨率以加快云端速度
+                        im = page.to_image(resolution=200) # 200dpi 足够且快
                         img_byte_arr = io.BytesIO()
                         im.original.save(img_byte_arr, format='PNG')
-                        result = ocr.ocr(img_byte_arr.getvalue(), cls=True)
-                        if result and result[0]:
-                            for line in result[0]:
-                                text_content += line[1][0] + "\n"
+                        result, _ = ocr(img_byte_arr.getvalue())
+                        if result:
+                            for line in result:
+                                text_content += line[1] + "\n"
 
         elif file_type == 'docx':
             doc = Document(uploaded_file)
@@ -179,7 +182,7 @@ def extract_text_from_file(uploaded_file):
             text_content = uploaded_file.getvalue().decode("utf-8")
         
         elif file_type in ['doc', 'wps']:
-            st.warning(f"检测到 {file_type} 格式。云端环境可能无法完美解析旧版二进制格式，建议另存为 docx。")
+            st.warning(f"检测到 {file_type} 格式。云端环境可能无法完美解析旧版二进制格式。")
             try:
                 text_content = uploaded_file.getvalue().decode("gbk", errors='ignore')
             except:
@@ -191,7 +194,7 @@ def extract_text_from_file(uploaded_file):
     return text_content
 
 def analyze_data_with_llm(raw_text):
-    """调用 DeepSeek API 分析非结构化文本"""
+    """调用 DeepSeek API 分析"""
     
     if "sk-" not in API_KEY:
         st.error("请先在代码中填入正确的 DeepSeek API Key！")
@@ -229,7 +232,7 @@ def analyze_data_with_llm(raw_text):
                 {"role": "system", "content": "You are a helpful assistant that outputs strictly JSON."},
                 {"role": "user", "content": prompt},
             ],
-            response_format={ "type": "json_object" } # 强制 JSON 格式，更稳定
+            response_format={ "type": "json_object" }
         )
         
         json_str = response.choices[0].message.content
@@ -240,7 +243,7 @@ def analyze_data_with_llm(raw_text):
         return None
 
 def logic_engine(data):
-    """基于规则的专家系统逻辑 (保持原版逻辑不变)"""
+    """基于规则的专家系统逻辑 (完整版)"""
     result = {}
     
     # 辅助函数：处理缺失数据
@@ -352,7 +355,7 @@ def logic_engine(data):
     p_trouble = get_val('personality_trouble') 
     p_cautious = get_val('personality_cautious')
     p_perfect = get_val('personality_perfect')
-    weekly_time = get_val('weekly_free_time', 0) or 0 # 防止None
+    weekly_time = get_val('weekly_free_time', 0) or 0
     willing_self = get_val('willing_to_self_build', False)
 
     if hard_budget and area:
@@ -363,7 +366,10 @@ def logic_engine(data):
             if p_trouble == "怕麻烦":
                 res_4 = "全案落地。"
             elif p_trouble == "不怕麻烦":
-                res_4 = "全案落地 或 小全包。" # 简化逻辑
+                if p_cautious == "谨慎":
+                    res_4 = "全案落地 或 小全包。"
+                else: 
+                    res_4 = "全案落地 或 小全包。"
         
         # 中高预算
         elif 900 <= hup < 1300:
@@ -490,7 +496,7 @@ def logic_engine(data):
         else:
             res_10 = TEXT_BLOCKS['flow_2']
     else:
-        res_10 = TEXT_BLOCKS['flow_2'] # 默认
+        res_10 = TEXT_BLOCKS['flow_2']
     
     result['process'] = res_10
     
@@ -541,31 +547,29 @@ def create_docx(logic_result):
     f.seek(0)
     return f
 
-# ================= Streamlit UI =================
+# ================= UI =================
 
-st.title("☁️ 装修规划 AI 助手 (云端专业版)")
+st.title("☁️ 装修规划 AI 助手 (云端极速版)")
 st.markdown("""
 **支持手机拍照上传 | 自动分析手写/打印体 | 生成 Word 方案**
-*AI 引擎: DeepSeek V3 | OCR 引擎: PaddleOCR (CPU Mode)*
+*AI 引擎: DeepSeek V3 | OCR 引擎: RapidOCR (Lite Mode)*
 """)
 
 uploaded_file = st.file_uploader("点击此处拍照或选择文件", type=['txt', 'docx', 'doc', 'wps', 'pdf', 'jpg', 'jpeg', 'png'])
 
 if uploaded_file is not None:
-    st.info("文件上传成功，云端正在进行 OCR 识别与 AI 分析，请耐心等待 10-20 秒...")
-    
     # 1. 提取文本
     text_extraction_success = False
-    with st.spinner('👀 正在识别图片和文档中的文字...'):
+    with st.spinner('👀 正在极速识别文字 (RapidOCR)...'):
         raw_text = extract_text_from_file(uploaded_file)
-        if raw_text and len(raw_text) > 10:
+        if raw_text and len(raw_text) > 10 and "OCR 引擎未就绪" not in raw_text:
             text_extraction_success = True
     
     if not text_extraction_success:
-        st.error("未能从文件中提取到有效文字，可能是图片太模糊或格式不支持。")
+        st.error(f"未能提取到有效文字。{raw_text}")
     else:
         # 2. AI 分析
-        with st.spinner('🧠 正在思考并制定规划方案...'):
+        with st.spinner('🧠 DeepSeek 正在思考规划方案...'):
             structured_data = analyze_data_with_llm(raw_text)
         
         if structured_data:
