@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+paddlepaddle==2.6.1
+paddleocr>=2.7.0
+python-docx
+opencv-python-headless
+openai
+pdfplumber
