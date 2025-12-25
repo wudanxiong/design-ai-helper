@@ -537,7 +537,7 @@ def create_docx(logic_result):
         run_title.font.size = Pt(12)
         
         p_content = doc.add_paragraph()
-        p_content.add_run("答案建议：\n")
+        p_content.add_run("规划建议：\n")
         p_content.add_run(str(content))
         doc.add_paragraph() 
 
@@ -595,3 +595,4 @@ if uploaded_file is not None:
             
         else:
             st.error("AI 无法解析数据，请检查 API Key 是否正确，或文件内容是否完整。")
+
