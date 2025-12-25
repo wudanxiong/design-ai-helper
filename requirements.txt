@@ -1,9 +1,10 @@
 streamlit
 pandas
 numpy
-paddlepaddle==2.6.1
-paddleocr>=2.7.0
-python-docx
-opencv-python-headless
 openai
+python-docx
 pdfplumber
+opencv-python-headless
+paddlepaddle
+paddleocr
+protobuf==3.20.3
