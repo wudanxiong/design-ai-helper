@@ -6,8 +6,9 @@ from openai import OpenAI
 from rapidocr_onnxruntime import RapidOCR
 import pdfplumber
 from docx import Document
-from docx.shared import Pt, RGBColor
+from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 import io
 import json
 import re
@@ -16,7 +17,6 @@ from datetime import datetime
 # ================= 配置区 =================
 
 # 🔴🔴🔴 请在此处填入您的 DeepSeek API Key 🔴🔴🔴
-# 建议使用 st.secrets 更安全，或者直接替换下方的字符串
 API_KEY = "sk-90ed7f3913324b6391f15805f0f963ea" 
 
 # DeepSeek 官方 API 地址
@@ -28,7 +28,7 @@ st.set_page_config(page_title="装修规划云助手", layout="wide")
 # ================= 初始化 OCR =================
 @st.cache_resource
 def load_ocr():
-    # RapidOCR 初始化非常快，不需要下载大模型
+    # RapidOCR 初始化非常快
     engine = RapidOCR()
     return engine
 
@@ -142,25 +142,20 @@ def extract_text_from_file(uploaded_file):
     
     try:
         if file_type in ['jpg', 'jpeg', 'png']:
-            # 图片 OCR
             bytes_data = uploaded_file.getvalue()
-            # RapidOCR 直接处理二进制流
             result, _ = ocr(bytes_data)
             if result:
-                # result 格式: [[box, text, score], ...]
                 for line in result:
                     text_content += line[1] + "\n"
                     
         elif file_type == 'pdf':
-            # PDF 处理
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
                     page_text = page.extract_text()
                     if page_text and len(page_text) > 30:
                         text_content += page_text + "\n"
                     else:
-                        # 扫描版 PDF 转图片 OCR
-                        im = page.to_image(resolution=200) # 200dpi 足够且快
+                        im = page.to_image(resolution=200)
                         img_byte_arr = io.BytesIO()
                         im.original.save(img_byte_arr, format='PNG')
                         result, _ = ocr(img_byte_arr.getvalue())
@@ -243,17 +238,15 @@ def analyze_data_with_llm(raw_text):
         return None
 
 def logic_engine(data):
-    """基于规则的专家系统逻辑 (完整版)"""
+    """基于规则的专家系统逻辑"""
     result = {}
     
-    # 辅助函数：处理缺失数据
     def get_val(key, default=None):
         val = data.get(key)
         if val is None:
             return None
         return val
 
-    # 提取数据
     hard_budget = get_val('hard_budget')
     total_budget = get_val('total_budget')
     area = get_val('area')
@@ -285,7 +278,6 @@ def logic_engine(data):
         hard_unit_price = hard_budget / area
         design_fee_str = ""
         
-        # 判定预算区间
         if 1300 <= hard_unit_price: 
             if area > 80 and score >= 9:
                 design_fee_str = f"{int(hard_budget*0.10)} ~ {int(hard_budget*0.12)} 元"
@@ -293,7 +285,6 @@ def logic_engine(data):
                 design_fee_str = f"{int(hard_budget*0.08)} ~ {int(hard_budget*0.10)} 元"
             else:
                  design_fee_str = "建议预留硬装预算的8%-10%" 
-        
         elif 900 <= hard_unit_price < 1300: 
             if score >= 9:
                  design_fee_str = f"{int(hard_budget*0.10)} ~ {int(hard_budget*0.11)} 元"
@@ -301,7 +292,6 @@ def logic_engine(data):
                  design_fee_str = f"{int(hard_budget*0.08)} ~ {int(hard_budget*0.09)} 元"
             else:
                  design_fee_str = "建议预留硬装预算的7%-8%"
-
         elif 500 <= hard_unit_price < 900: 
             if score >= 9:
                 design_fee_str = f"{int(hard_budget*0.09)} ~ {int(hard_budget*0.10)} 元"
@@ -311,7 +301,6 @@ def logic_engine(data):
                 design_fee_str = f"{int(hard_budget*0.05)} ~ {int(hard_budget*0.07)} 元"
             else:
                  design_fee_str = "建议预留硬装预算的5%左右"
-
         elif hard_unit_price < 500: 
             if 7 <= score <= 8:
                 design_fee_str = f"{int(hard_budget*0.07)} ~ {int(hard_budget*0.08)} 元"
@@ -334,7 +323,7 @@ def logic_engine(data):
     
     result['design_fee'] = res_2
 
-    # 逻辑三：设计师档次建议
+    # 逻辑三：设计师档次
     res_3 = "需先确定设计费预算"
     if design_unit_price > 0:
         dup = design_unit_price
@@ -351,7 +340,7 @@ def logic_engine(data):
     result['designer_level'] = res_3
 
     # 逻辑四：施工承包方式
-    res_4 = "客户未提供足够判断数据（需预算、性格倾向）"
+    res_4 = "客户未提供足够判断数据"
     p_trouble = get_val('personality_trouble') 
     p_cautious = get_val('personality_cautious')
     p_perfect = get_val('personality_perfect')
@@ -360,188 +349,164 @@ def logic_engine(data):
 
     if hard_budget and area:
         hup = hard_budget / area
-        
-        # 高预算
         if hup >= 1300:
-            if p_trouble == "怕麻烦":
-                res_4 = "全案落地。"
-            elif p_trouble == "不怕麻烦":
-                if p_cautious == "谨慎":
-                    res_4 = "全案落地 或 小全包。"
-                else: 
-                    res_4 = "全案落地 或 小全包。"
-        
-        # 中高预算
+            if p_trouble == "怕麻烦": res_4 = "全案落地。"
+            elif p_trouble == "不怕麻烦": res_4 = "全案落地 或 小全包。"
         elif 900 <= hup < 1300:
-            if p_trouble == "怕麻烦":
-                res_4 = "全包 或 小全包。"
-            elif p_trouble == "不怕麻烦" and weekly_time >= 2:
-                res_4 = "半包 或 小全包。"
-            else:
-                res_4 = "建议全包（因时间或性格原因）。"
-
-        # 中预算
+            if p_trouble == "怕麻烦": res_4 = "全包 或 小全包。"
+            elif p_trouble == "不怕麻烦" and weekly_time >= 2: res_4 = "半包 或 小全包。"
+            else: res_4 = "建议全包（因时间或性格原因）。"
         elif 500 <= hup < 900:
-            if p_trouble == "怕麻烦" and p_cautious == "谨慎":
-                res_4 = "全包 或 小全包。"
-            elif p_trouble == "不怕麻烦" and p_cautious == "谨慎" and weekly_time >= 2:
-                res_4 = "半包 或 小全包。"
-            else:
-                 res_4 = "建议全包。"
-
-        # 低预算
+            if p_trouble == "怕麻烦" and p_cautious == "谨慎": res_4 = "全包 或 小全包。"
+            elif p_trouble == "不怕麻烦" and p_cautious == "谨慎" and weekly_time >= 2: res_4 = "半包 或 小全包。"
+            else: res_4 = "建议全包。"
         elif hup < 500:
             can_self_build = willing_self and weekly_time >= 3
-            if can_self_build:
-                res_4 = "可以自装。"
-            elif p_cautious == "敢放手" and p_trouble == "怕麻烦":
-                res_4 = "小全包。"
-            elif p_cautious == "敢放手" and p_trouble == "不怕麻烦":
-                res_4 = "半包。"
-            else:
-                res_4 = "建议半包。"
-    
+            if can_self_build: res_4 = "可以自装。"
+            elif p_cautious == "敢放手" and p_trouble == "怕麻烦": res_4 = "小全包。"
+            elif p_cautious == "敢放手" and p_trouble == "不怕麻烦": res_4 = "半包。"
+            else: res_4 = "建议半包。"
     result['construction_mode'] = res_4
 
-    # 逻辑五：施工方建议
+    # 逻辑五：施工方
     res_5 = "客户未提供预算或追求偏好"
     if hard_budget and area and p_perfect:
         hup = hard_budget / area
         if hup >= 900:
-            if p_perfect == "追求完美" or p_perfect == "追求平衡":
-                res_5 = "5年以上全案落地或精工施工。"
-            elif p_perfect == "追求性价比":
-                res_5 = "5年以上中小公司或大型连锁。"
+            if p_perfect == "追求完美" or p_perfect == "追求平衡": res_5 = "5年以上全案落地或精工施工。"
+            elif p_perfect == "追求性价比": res_5 = "5年以上中小公司或大型连锁。"
         elif 500 <= hup < 900:
-            if p_perfect == "追求完美":
-                res_5 = "大型全国连锁。"
-            elif p_perfect == "追求平衡":
-                res_5 = "5年以上中小装修公司。"
-            else:
-                 res_5 = "5年以上小装修公司。"
-        else:
-             res_5 = "5年以上小装修公司。"
+            if p_perfect == "追求完美": res_5 = "大型全国连锁。"
+            elif p_perfect == "追求平衡": res_5 = "5年以上中小装修公司。"
+            else: res_5 = "5年以上小装修公司。"
+        else: res_5 = "5年以上小装修公司。"
     result['contractor'] = res_5
 
-    # 逻辑六：辅材推荐
+    # 逻辑六：辅材
     res_6 = "暂无建议"
     if hard_budget and area:
         hup = hard_budget / area
-        if hup >= 1300:
-            res_6 = TEXT_BLOCKS['mat_3']
-        elif hup >= 500:
-            res_6 = TEXT_BLOCKS['mat_2']
-        else:
-            res_6 = TEXT_BLOCKS['mat_1']
+        if hup >= 1300: res_6 = TEXT_BLOCKS['mat_3']
+        elif hup >= 500: res_6 = TEXT_BLOCKS['mat_2']
+        else: res_6 = TEXT_BLOCKS['mat_1']
     result['materials'] = res_6
 
-    # 逻辑七：零冷水建议
+    # 逻辑七：零冷水
     res_7 = "客户未提供面积数据"
     if hard_budget and area:
         hup = hard_budget / area
-        if hup >= 900: 
-            res_7 = "建议做大循环零冷水。"
+        if hup >= 900: res_7 = "建议做大循环零冷水。"
         elif 500 <= hup < 900: 
-            if area >= 80:
-                res_7 = "建议做大循环。"
-            else:
-                res_7 = "建议做小循环。"
+            if area >= 80: res_7 = "建议做大循环。"
+            else: res_7 = "建议做小循环。"
         else: 
-            if area >= 80:
-                res_7 = "建议做小循环。"
-            else:
-                res_7 = "建议不做零冷水。"
+            if area >= 80: res_7 = "建议做小循环。"
+            else: res_7 = "建议不做零冷水。"
     result['zero_cold_water'] = res_7
 
-    # 逻辑八：水电改造建议
+    # 逻辑八：水电
     res_8 = "需提供房龄信息"
     is_old = get_val('house_is_old')
     h_age = get_val('house_age', 0) or 0
-    
-    if is_old and (h_age > 8 or (h_age == 0 and is_old)):
-        res_8 = "全改。"
+    if is_old and (h_age > 8 or (h_age == 0 and is_old)): res_8 = "全改。"
     elif not is_old: 
-        if hard_budget and area and (hard_budget/area) >= 900:
-            res_8 = "水全改，电半改或全改。"
-        else:
-            res_8 = "水电半改。"
+        if hard_budget and area and (hard_budget/area) >= 900: res_8 = "水全改，电半改或全改。"
+        else: res_8 = "水电半改。"
     elif is_old and h_age <= 8:
-         if hard_budget and area and (hard_budget/area) < 900:
-             res_8 = "水全改，电部分半改(厨卫空调全改)。"
-         else:
-             res_8 = "建议全改（预算充足情况）。"
-    
+         if hard_budget and area and (hard_budget/area) < 900: res_8 = "水全改，电部分半改(厨卫空调全改)。"
+         else: res_8 = "建议全改（预算充足情况）。"
     result['plumbing_electric'] = res_8
 
-    # 逻辑九：装修污染
+    # 逻辑九：污染
     res_9 = "建议持续开窗通风"
     vent = get_val('ventilation')
-    if hard_budget and area and (hard_budget/area) >= 900:
-        res_9 = "建议安装中央新风。"
-    elif vent == "晾晒小于1年":
-         res_9 = "建议壁挂新风或新风挂机。"
-    elif vent == "晾晒大于1年" or vent == "好":
-         res_9 = "建议持续开窗通风，可不装新风。"
+    if hard_budget and area and (hard_budget/area) >= 900: res_9 = "建议安装中央新风。"
+    elif vent == "晾晒小于1年": res_9 = "建议壁挂新风或新风挂机。"
+    elif vent == "晾晒大于1年" or vent == "好": res_9 = "建议持续开窗通风，可不装新风。"
     result['pollution'] = res_9
 
-    # 逻辑十：流程建议
+    # 逻辑十：流程
     res_10 = ""
     accept_design_fee = get_val('budget_can_cover_design', True)
-    
-    if not accept_design_fee:
-        res_10 = TEXT_BLOCKS['flow_3']
+    if not accept_design_fee: res_10 = TEXT_BLOCKS['flow_3']
     elif score is not None:
-        if score >= 5:
-            res_10 = TEXT_BLOCKS['flow_1']
-        else:
-            res_10 = TEXT_BLOCKS['flow_2']
-    else:
-        res_10 = TEXT_BLOCKS['flow_2']
-    
+        if score >= 5: res_10 = TEXT_BLOCKS['flow_1']
+        else: res_10 = TEXT_BLOCKS['flow_2']
+    else: res_10 = TEXT_BLOCKS['flow_2']
     result['process'] = res_10
     
     return result
 
 def create_docx(logic_result):
-    """生成Word文档"""
+    """生成表格格式的 Word 文档"""
     doc = Document()
     
-    # 样式设置
+    # 字体设置
     style = doc.styles['Normal']
     style.font.name = '微软雅黑'
     style.font.size = Pt(10)
-    style.element.rPr.rFonts.set("hint", "微软雅黑")
+    style.element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
 
     # 标题
     heading = doc.add_heading('根据个人情况给出的装修规划指南表', 0)
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    # 内容
+    doc.add_paragraph() # 空行
+
+    # 数据映射
     items = [
-        ("**一、预算是否合理", logic_result['budget_analysis']),
-        ("**二、设计费预算建议", logic_result['design_fee']),
-        ("**三、设计师档次建议", logic_result['designer_level']),
-        ("**四、施工承包方式建议", logic_result['construction_mode']),
-        ("**五、施工方建议", logic_result['contractor']),
-        ("**六、适合的辅材、主材档次", logic_result['materials']),
-        ("**七、零冷水建议：", logic_result['zero_cold_water']),
-        ("**八、水电全改半改建议：", logic_result['plumbing_electric']),
-        ("**九、入住时间及装修污染解决", logic_result['pollution']),
-        ("**十、找设计师、公司的详细流程建议", logic_result['process'])
+        ("一、预算是否合理", logic_result.get('budget_analysis', '')),
+        ("二、设计费预算建议", logic_result.get('design_fee', '')),
+        ("三、设计师档次建议", logic_result.get('designer_level', '')),
+        ("四、施工承包方式建议", logic_result.get('construction_mode', '')),
+        ("五、施工方建议", logic_result.get('contractor', '')),
+        ("六、适合的辅材、主材档次", logic_result.get('materials', '')),
+        ("七、零冷水建议", logic_result.get('zero_cold_water', '')),
+        ("八、水电全改半改建议", logic_result.get('plumbing_electric', '')),
+        ("九、入住时间及装修污染解决", logic_result.get('pollution', '')),
+        ("十、找设计师、公司的详细流程建议", logic_result.get('process', ''))
     ]
 
-    for title, content in items:
-        p_title = doc.add_paragraph()
-        run_title = p_title.add_run(title)
-        run_title.bold = True
-        run_title.font.size = Pt(12)
-        
-        p_content = doc.add_paragraph()
-        p_content.add_run("规划建议：\n")
-        p_content.add_run(str(content))
-        doc.add_paragraph() 
+    # 创建表格：行数=项目数+1(表头)，列数=2
+    table = doc.add_table(rows=len(items) + 1, cols=2)
+    table.style = 'Table Grid' # 设置黑色边框网格
 
-    # 保存到内存
+    # 设置列宽 (大概比例 3:7)
+    table.autofit = False
+    table.columns[0].width = Inches(2.0)
+    table.columns[1].width = Inches(4.5)
+
+    # --- 设置表头 ---
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = '分析项目'
+    hdr_cells[1].text = '装修规划建议'
+    
+    # 表头加粗
+    for cell in hdr_cells:
+        for paragraph in cell.paragraphs:
+            for run in paragraph.runs:
+                run.font.bold = True
+                run.font.size = Pt(11)
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # --- 填充内容 ---
+    for i, (title, content) in enumerate(items):
+        # 注意：数据从第2行开始填 (rows[i+1])
+        row_cells = table.rows[i + 1].cells
+        
+        # 第一列：标题
+        row_cells[0].text = title
+        # 让标题垂直居中/加粗
+        for p in row_cells[0].paragraphs:
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            if p.runs:
+                p.runs[0].font.bold = True
+            else:
+                p.add_run(title).font.bold = True
+
+        # 第二列：内容
+        row_cells[1].text = str(content)
+
+    # 保存文件
     f = io.BytesIO()
     doc.save(f)
     f.seek(0)
@@ -551,14 +516,13 @@ def create_docx(logic_result):
 
 st.title("☁️ 装修规划 AI 助手 (云端极速版)")
 st.markdown("""
-**支持手机拍照上传 | 自动分析手写/打印体 | 生成 Word 方案**
+**支持手机拍照上传 | 自动分析手写/打印体 | 生成表格版 Word 方案**
 *AI 引擎: DeepSeek V3 | OCR 引擎: RapidOCR (Lite Mode)*
 """)
 
 uploaded_file = st.file_uploader("点击此处拍照或选择文件", type=['txt', 'docx', 'doc', 'wps', 'pdf', 'jpg', 'jpeg', 'png'])
 
 if uploaded_file is not None:
-    # 1. 提取文本
     text_extraction_success = False
     with st.spinner('👀 正在极速识别文字 (RapidOCR)...'):
         raw_text = extract_text_from_file(uploaded_file)
@@ -568,25 +532,20 @@ if uploaded_file is not None:
     if not text_extraction_success:
         st.error(f"未能提取到有效文字。{raw_text}")
     else:
-        # 2. AI 分析
         with st.spinner('🧠 DeepSeek 正在思考规划方案...'):
             structured_data = analyze_data_with_llm(raw_text)
         
         if structured_data:
-            # 3. 逻辑推导
             logic_result = logic_engine(structured_data)
             
-            # 4. 展示预览
             st.success("✅ 分析完成！")
-            
             with st.expander("点击查看规划详情预览"):
                 st.write(logic_result)
             
-            # 5. 生成下载
             docx_file = create_docx(logic_result)
             
             st.download_button(
-                label="📥 点击下载《装修规划指南表》(Word文档)",
+                label="📥 点击下载《装修规划指南表》(表格版)",
                 data=docx_file,
                 file_name=f"装修规划指南_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -595,4 +554,3 @@ if uploaded_file is not None:
             
         else:
             st.error("AI 无法解析数据，请检查 API Key 是否正确，或文件内容是否完整。")
-
